@@ -36,6 +36,7 @@
 typedef boost::multiprecision::int256_t multiprecision;
 
 bool bverbose = false; /* flag to print out extra information */
+bool bcomplementary = false; /* flag to solve the complementary problem */
 
 /* the initial set 1...n, specify n as "nsetsize" */
 unsigned nsetsize;
@@ -60,7 +61,9 @@ void enumerate_fully_multiple_map_types(void) {
 
    /* the most any single item can appear as a destination is (nsetsize-2) choose two
     because of image restrictions, any 2-element subset must map to a disjoint 2 element subset */
-   const unsigned max_item = (nsetsize -2) * (nsetsize-3) / 2;
+   const unsigned max_item = (bcomplementary
+      ? max_sum - (nsetsize -2) * (nsetsize-3) / 2
+      : (nsetsize -2) * (nsetsize-3) / 2 );
    if (max_item < 2) return;
 
    /* start with the simplest maptype, a single element appearing twice as a destination */
@@ -198,7 +201,11 @@ void find_image_orbits(void) {
    }
    BOOST_FOREACH(const std::string &s1, pairsets) {
       BOOST_FOREACH(const std::string &s2, pairsets) {
-         if ((elembmap[s1] & elembmap[s2]) == 0) {
+         bool bdisjoint = ((elembmap[s1] & elembmap[s2]) == 0);
+         if (bcomplementary) { /* if we're solving the complementary problem, we want pairs that are NOT disjoint */
+            bdisjoint = !bdisjoint;
+         }
+         if (bdisjoint) {
             disjointmap[s1].push_back(pairbmap[s2]);
          }
       }
@@ -574,6 +581,9 @@ void dump_results_by_size(void) {
 void compute_final_result(void) {
    unsigned nelements = nsetsize * (nsetsize-1) /2; /* number of two-element subsets, n choose 2 */
    unsigned ndisjoint = (nsetsize -2) * (nsetsize-3) /2; /* number of elements disjoint from any given, n-2 choose 2 */
+   if (bcomplementary) {
+      ndisjoint = nelements - ndisjoint; /* we want the non-disjoint elements for the complementary problem */
+   }
 
    /* calculate a vector of factorials from zero factorial to nelements factorial */
    std::vector<multiprecision> factorial;
@@ -650,6 +660,7 @@ int main(int argc, char *argv[]) {
       if (argc <2) throw std::runtime_error("usage: subsetperms nsetsize [v]erbose\n  where nsetsize is from 5 through 7");
       for (int i=1; i<argc; ++i) {
          if (argv[i][0] == 'v') bverbose = true;
+         else if (argv[i][0] == 'c') bcomplementary = true;
          else {
             nsetsize = boost::lexical_cast<unsigned>(argv[i]);
          }
