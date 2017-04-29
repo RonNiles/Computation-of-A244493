@@ -105,18 +105,230 @@ void enumerate_fully_multiple_map_types(void) {
    }
 }
 
-/* permuted maptypes. For example, the maptypes might have 3 2 2 as an entry since it is always
-   descending. The permuted maptypes has all permutations of this, i.e.: 3 2 2, 2 3 2, 2 2 3
+/*
+  decode_pattern:
+  given a vector of multiplicities, this will provide a decode table for translating orbit strings
+  e.g. "aaabbc" to their correct positions in an orbit permutation. 
 */
-std::set<std::vector<unsigned> > permuted_maptypes;
+std::vector<unsigned> decode_pattern(const std::vector<unsigned> &img) {
+   std::map<unsigned, unsigned> freq;
+   for (unsigned j=0; j<img.size(); ++j) {
+      ++freq[img[j]];
+   }
+   std::multiset<unsigned, std::greater<unsigned> > pat;
+   for (std::map<unsigned, unsigned>::const_iterator j = freq.begin(); j!=freq.end(); ++j) {
+      pat.insert(j->second);
+   }
+   std::vector<unsigned> res;
+   while(!pat.empty()) {
+      unsigned val = *pat.begin();
+      pat.erase(pat.begin());
+      std::map<unsigned, unsigned>::iterator im;
+      for (im = freq.begin(); im != freq.end(); ++im) {
+         if (im->second == val) {
+            break;
+         }
+      }
+      if (im == freq.end()) throw std::runtime_error("decode pattern error");
+      res.push_back(im->first);
+      freq.erase(im);
+   }
+   return res;
+}
 
-void permute_map_types(void) {
+/*
+  map_pattern:
+  given a vector of multiplicities, this will provide a pattern based on
+  small letters of the alphabet showing the number of times each
+  multiplicity value appears
+*/
+std::string map_pattern(const std::vector<unsigned> &img) {
+
+   /* first a frequency showing how many times each multiplicity value occurs */
+   std::map<unsigned, unsigned> freq;
+   for (unsigned j=0; j<img.size(); ++j) {
+      ++freq[img[j]];
+   }
+
+   /* then sort the frequencies ascending */
+   std::multiset<unsigned, std::greater<unsigned> > pat;
+   for (std::map<unsigned, unsigned>::const_iterator j = freq.begin(); j!=freq.end(); ++j) {
+      pat.insert(j->second);
+   }
+
+   /* then translate the sorted frequencies into strings of small letters which each represent 
+      a multiplicity in the vector that was provided. This will be something like "aaaabbc" 
+      (characters ascending, length of character runs nondescending) */
+   std::string s;
+   char ch = 'a';
+   for (std::multiset<unsigned, std::greater<unsigned> >::const_iterator j = pat.begin(); j!=pat.end(); ++j) {
+      s.append(*j, ch++);
+   }
+   return s;
+}
+
+typedef std::vector<std::vector<unsigned> > image_grouped_t;
+typedef std::map<std::string, image_grouped_t> image_pattern_t;
+
+std::map<unsigned, image_pattern_t > image_by_orbit;
+
+/* find_map_patterns: go through all of the maptypes, get the map pattern for each,
+   which will be something like "aaaabbc" (characters ascending, length of character
+   runs nondescending), and put them in the image_by_orbit list.
+*/
+void find_map_patterns(void) {
    for (std::set<std::vector<unsigned> >::const_iterator i=maptypes.begin(); i != maptypes.end(); ++i)
    {
-      std::vector<unsigned> combos = *i;
+      std::string s = map_pattern(*i);
+      if (s.size() != i->size()) throw std::runtime_error("size mismatch in generating patterns");
+      image_by_orbit[s.size()][s].push_back(*i);
+   }
+}
+
+/* orbits finder object. Start with the mainorbit, which is based on the subset of elements in
+   a map image without regards to multiplicity. The purpose of this class is to find
+   orbits which are based on the original main orbit but include multiplicities, in other words
+   if the orbit is {AB AC BC}, and the multiplicities are {2 3 4}, each permutation of the
+   multiplicities will yield image configurations which evaluate identically because {AB AC BC} is
+   highly symmetric. So we only need to evaluate AB02AC03BC04 because other permutations such as
+   AB03AC04BC02 will have the same number of mappings. */
+class orbits_finder {
+public:
+   /* constructor takes the main orbit */
+   orbits_finder(const std::string &m) : mainorbit(m) {
+      /* find the set of characters used by all elements in the main orbit (so we can permute them) */
+      std::set<char> usedch;
+      for (std::string::const_iterator i= m.begin(); i!= m.end(); ++i) {
+         usedch.insert(*i);
+      }
+
+      /* set up an xlat vector from the sorted characters, so the xlat vector can go
+         through all of its permutations and act on the mainorbit */
+      std::vector<char> xlat;
+      for (std::set<char>::const_iterator i = usedch.begin(); i != usedch.end(); ++i) {
+         xlat.push_back(*i);
+      }
+
       do {
-         permuted_maptypes.insert(combos);
-      } while(prev_permutation(combos.begin(), combos.end()));
+         std::set<std::string> newstr;
+         /* go through each two-letter segment of the main orbit, translating
+         characters according to the permutation in xlat */
+         for(unsigned i=0; i<mainorbit.size(); i+=2) {
+            std::string s1;
+            s1.push_back(xlat[mainorbit[i]-'A']);
+            s1.push_back(xlat[mainorbit[i+1]-'A']);
+            s1.push_back('a'+i/2);  /* also attach letters a,b,c,d... in sequence to the initial arrangement */
+            if (s1[0] > s1[1]) std::swap(s1[0], s1[1]); /* we must keep the translated two-letter segment in ascending order */
+            newstr.insert(s1); /* insert to a set, so we can reassemble the translated orbit in lexicographic order */
+         }
+         /* reassemble the translated orbit in lexicographic order */
+         std::string s1, s2;
+         for (std::set<std::string>::const_iterator i = newstr.begin(); i != newstr.end(); ++i) {
+            s1 += i->substr(0,2);
+            s2 += (*i)[2];
+         }
+         /* we're only interested in permutations that are part of the kernel of the group action,
+            in other words the permutation preserves the mainorbit subset */
+         if (s1 == mainorbit) {
+            /* now find the permutation that was induced on the mainorbit by this permutation, and
+               save it in the set. There could be many permutations on the mainorbit that induce
+               identical permutatons so the induced permutations are kept in a set to sort and 
+               eliminate duplicates */
+            std::vector<unsigned char> newinduced;
+            for (unsigned k=0; k< s2.size(); ++k) {
+               newinduced.push_back(s2.find('a'+k));
+            }
+            induced.insert(newinduced);
+         }
+      } while(next_permutation(xlat.begin(), xlat.end()));
+   }
+
+   /* find all orbits of a map_pattern. The map_pattern will be run through all of its permutations,
+     and those permutations of the map pattern will be grouped into orbits by letting the 
+     induced permutations of the main orbit act on that set */
+   void find_orbits(const std::string &nd) {
+      orbits.clear();
+      if (nd.size() *2 != mainorbit.size()) throw std::runtime_error("orbit size mismatch");
+      /* go through all of the permutations of the map_pattern */
+      std::string nd2 = nd;
+      do {
+         if (!already(nd2)) { /* if it's not already in one of the orbits */
+            new_orbit(nd2);   /* then set up a new orbit for it */
+         }
+      } while(next_permutation(nd2.begin(), nd2.end()));
+   }
+   /* see if the string is already in one of the orbits by searching each orbit in sequence */
+   bool already(const std::string &s) {
+      for (unsigned i=0; i< orbits.size(); ++i) {
+         if (orbits[i].find(s) != orbits[i].end()) {
+            return true;
+         }
+      }
+      return false;
+   }
+   /* set up a new orbit for a string which was not found in any of the existing orbits */
+   void new_orbit(const std::string &s) {
+      /* push back an empty set to the end of the orbit vector. We will add to this set */
+      orbits.push_back(std::set<std::string>());
+
+      /* Let the induced permutations act upon the string, and insert each of the permuted versions
+         of the string into the set. Some of them may be duplicates, the set will remove those */
+      for (std::set<std::vector<unsigned char> >::const_iterator i = induced.begin(); i != induced.end(); ++i) {
+         std::string s2;
+         for (unsigned j=0; j<s.size(); ++j) {
+            s2 += s[i->at(j)];
+         }
+         orbits.back().insert(s2);
+      }
+   }
+
+   std::vector<std::set<std::string> > orbits;
+   std::set<std::vector<unsigned char> > induced;
+   std::string mainorbit;
+   unsigned mainorbit_size;
+};
+
+
+/* templated functor icf_walker which will be called with a mainorbit string and go through all
+   of the map_patterns in the image_by_orbit and call back the function "w" with a representative
+   of all the new orbits found by the orbits_finder */
+template <typename walker>
+struct icf_walker {
+   icf_walker(walker w_) : w(w_) { }
+   void operator() (const std::string &sitem, unsigned size, const std::vector<unsigned> multiplicities) {
+      orbits_finder of(sitem);
+      of.mainorbit_size = size;
+      for (image_pattern_t::const_iterator j = image_by_orbit.begin()->second.begin();
+            j != image_by_orbit.begin()->second.end(); ++j) {
+         of.find_orbits(j->first);
+         for (unsigned k=0; k<of.orbits.size(); ++k) {
+            for (image_grouped_t::const_iterator ig = j->second.begin(); ig != j->second.end(); ++ig) {
+               std::vector<unsigned> dp = decode_pattern(*ig);
+               std::string subproblem;
+               for (unsigned seg = 0; seg < sitem.size(); seg += 2) {
+                  subproblem += sitem.substr(seg, 2);
+                  std::string snumber = boost::lexical_cast<std::string>(dp[of.orbits[k].begin()->at(seg/2)-'a']);
+                  while (snumber.size() < 2) snumber.insert(snumber.begin(), '0');
+                  subproblem.append(snumber);
+               }
+               w(subproblem, of.mainorbit_size * of.orbits[k].size(), *ig);
+            }
+         }
+      }
+   }
+   walker w;
+};
+
+/* templated functor to walk through all orbits of all map patterns for the purpose
+  of generating image_configurations to evaluate, or later on looking up
+  the solved image_configurations to tabulate */
+template <typename walker>
+void walk_image_configurations(walker w) {
+   find_map_patterns();
+   while(!image_by_orbit.empty()) {
+      unsigned ncolumns = image_by_orbit.begin()->first;
+      walk_main_orbits(icf_walker<walker>(w), ncolumns);
+      image_by_orbit.erase(image_by_orbit.begin());
    }
 }
 
@@ -294,6 +506,22 @@ void find_image_orbits(void) {
    std::cout << std::endl;
 };
 
+/* templated function to walk through all of the main orbits (on a specified number of items) and
+   execute a callback for each */
+template <typename walker>
+void walk_main_orbits(walker w, unsigned nitems) {
+   const std::string *snext = &orbits[nitems].front();
+   unsigned norbits = orbits[nitems].size() / (nitems + 1); /* the extra 1 is for the size */
+   for (unsigned n=0; n<norbits; ++n) {
+      std::string sitem;
+      for (unsigned k=0; k<nitems; ++k) {
+         sitem += *(snext++);
+      }
+      unsigned orbitsize = boost::lexical_cast<unsigned>(*(snext++));
+      w(sitem, orbitsize, std::vector<unsigned>());
+   }
+}
+
 /* precomputed bitmaps. For every pair AB, and every number of column partners, 
    compute a vector of bitmaps corresponding to all possible combinations */
 std::map<std::string, std::map<unsigned, std::vector<unsigned> > > precomputed;
@@ -341,34 +569,17 @@ void make_domain_table(void) {
    }
 }
 
-/* enumerate_image_configurations. In this routine there is a double-nested loop
-   to combine each permuted maptype with the appropriate orbits to generate
-   image configurations to solve. The orbits and permuted maptypes are combined by
-   interlacing two letters (for the image element) with two digits (for the multiplicity) */
-void enumerate_image_configurations(void) {
-
-   for (std::set<std::vector<unsigned> >::const_iterator i=permuted_maptypes.begin();
-      i != permuted_maptypes.end(); ++i)
-   {
-      const std::vector<unsigned> & item = *i;
-      unsigned ncolumns = item.size();
-      const std::string *snext = &orbits[ncolumns].front();
-
-      unsigned norbits = orbits[ncolumns].size() / (ncolumns + 1);
-      for (unsigned i=0; i<norbits; ++i) {
-         std::string sitem;
-         for (unsigned j=0; j<ncolumns; ++j) {
-            sitem += *snext;
-            std::string snumber = boost::lexical_cast<std::string>(item[j]);
-            while (snumber.size() < 2) snumber.insert(snumber.begin(), '0');
-            sitem +=snumber;
-            ++snext;
-         }
-         image_configurations.insert(sitem);
-         unsigned orbit_size = boost::lexical_cast<unsigned>(*snext);
-         snext++;
-      }
+/* enumerate_image_configurations. This is done by using the "insert_image_config" callback 
+   which gets walked by the "walk_image_configurations" templated function */
+struct insert_image_config {
+   void operator() (const std::string &imgcfg, unsigned orbitsize, const std::vector<unsigned> &multiplicities) {
+      /* The orbits and permuted maptypes have been combined by interlacing two letters (for the image element) 
+         with two digits (for the multiplicity) for a string e.g. "AB02AC04AD03" */
+      image_configurations.insert(imgcfg);
    }
+};
+void enumerate_image_configurations(void) {
+   walk_image_configurations(insert_image_config());
 }
 
 boost::uint64_t max_image_configuration_val = 0;
@@ -539,57 +750,28 @@ from smallest to largest. We're using multiprecision integers from the BOOST pac
 numbers are getting larger than 64-bits for n=7 */
 std::map<unsigned, std::map<std::vector<unsigned>, multiprecision> > results_by_size;
 
-void tally_results_by_size(void) {
-   /* go through all of the maptypes */
-   for (std::set<std::vector<unsigned> >::const_iterator i=maptypes.begin(); i != maptypes.end(); ++i)
-   {
+/* tally_results callback. The result will be multiplied by its orbit size since we're only evaluating one
+   image configuration for each orbit, then put in the results_by_size container */
+struct tally_results {
+   void operator() (const std::string &imgcfg, unsigned orbit_size, const std::vector<unsigned> &multiplicities) {
       /* find the size, which means the number of elements mapped by the one-to-many mappings being tallied */
       unsigned size = 0;
-      for (unsigned j=0; j<i->size(); ++j) {
-         size += (*i)[j];
+      for (unsigned j=0; j<multiplicities.size(); ++j) {
+         size += multiplicities[j];
       }
-
-      /* now we have to go through all permutations of the maptype, and then through all of the 
-         orbits and tally up all of the fully-multiple mappings that have the required multiplicity
-         values */
-      std::vector<unsigned> combos = *i; /* the original, ordered multiplicity counts */
-      multiprecision total_all_combos = 0;
-      do {
-         multiprecision total_this_orbit = 0; /* initialize to zero, we will update it */
-         unsigned nimageelements = combos.size();
-         /* next we need to go through all the orbits for nimagelements */
-         const std::string *snext = &orbits[nimageelements].front();
-         /* It's a repeated set of nimagelement strings followed by a number string, 
-            so divide to get the number of orbits */
-         unsigned norbits = orbits[nimageelements].size() / (nimageelements + 1);
-         /* now go through each orbit and combine the orbit and the count combination 
-            to get the corresponding image_configuration that was solved */
-         for (unsigned i=0; i<norbits; ++i) {
-            std::string sitem;
-            for (unsigned j=0; j<combos.size(); ++j) {
-               sitem += *snext;
-               std::string snumber = boost::lexical_cast<std::string>(combos[j]);
-               while (snumber.size() < 2) snumber.insert(snumber.begin(), '0');
-               sitem +=snumber;
-               ++snext;
-            }
-            /* now how many items are in the orbit. Multiply since we only need to solve one member of the orbit
-               and the same result applies to all members */
-            unsigned orbit_size = boost::lexical_cast<unsigned>(*snext);
-            std::map<std::string, boost::uint64_t>::const_iterator mi = solved_image_configurations.find(sitem);
-            if (mi == solved_image_configurations.end() || mi->first != sitem) throw std::runtime_error("can't find structure " + sitem);
-            multiprecision mtmp = mi->second;
-            mtmp *= orbit_size;
-            total_this_orbit += mtmp;
-
-            snext++; /* go on to next orbit */
-         }
-         total_all_combos += total_this_orbit;
-      } while(prev_permutation(combos.begin(), combos.end()));
-      /* now we've added all combinations times all orbits, so this is the grand total of number of 
-         mappings which have the required numbers of image multiplicities */
-      results_by_size[size][*i] = total_all_combos;
+      /* now how many items are in the orbit. Multiply since we only need to solve one member of the orbit
+         and the same result applies to all members */
+      std::map<std::string, boost::uint64_t>::const_iterator mi = solved_image_configurations.find(imgcfg);
+      if (mi == solved_image_configurations.end() || mi->first != imgcfg) 
+         throw std::runtime_error("can't find image configuration result for " + imgcfg);
+      multiprecision mtmp = mi->second;
+      mtmp *= orbit_size;
+      results_by_size[size][multiplicities] += mtmp;
    }
+};
+
+void tally_results_by_size(void) {
+   walk_image_configurations(tally_results());
 }
 
 /* the net value to inclusion exclusion from a fully-multiple mapping.
@@ -720,7 +902,7 @@ int main(int argc, char *argv[]) {
          }
       }
 
-      std::cout << "enumerating non-invertible map types" << std::endl;
+      std::cout << "enumerating fully-multiple map types" << std::endl;
       enumerate_fully_multiple_map_types();
       std::cout << "found " << maptypes.size() << " maptypes" << std::endl;
       if (bverbose) {
@@ -733,21 +915,6 @@ int main(int argc, char *argv[]) {
             std::cout << std::endl;
          }
       }
-
-      std::cout << "permuting the non-invertible map types" << std::endl;
-      permute_map_types();
-      std::cout << "found " << permuted_maptypes.size() << " permuted maptypes" << std::endl;
-      if (bverbose) {
-         unsigned nitem = 0;
-         for (std::set<std::vector<unsigned> >::const_iterator i = permuted_maptypes.begin(); i != permuted_maptypes.end(); ++i) {
-            std::cout << ++nitem << ": ";
-            for (unsigned j=0; j < i->size(); ++j) {
-               std::cout << (*i)[j] << " ";
-            }
-            std::cout << std::endl;
-         }
-      }
-
       std::cout << "finding orbits for image multiplicity sets" << std::endl;
       make_pairsets();
       {
