@@ -120,10 +120,6 @@
 #define NDEBUG 1
 #endif
 
-#ifndef ssize_t
-typedef int ssize_t;
-#endif
-
 namespace btree {
 
 // Inside a btree method, if we just call swap(), it will choose the
