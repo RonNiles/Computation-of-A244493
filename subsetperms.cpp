@@ -128,6 +128,47 @@ std::set<std::string> pairsets;
    eg. AB has a vector of bits corresponding to CD CE DE... */
 std::map<std::string, std::vector<unsigned> > disjointmap;
 
+void make_pairsets(void) {
+   char maxletter='A'+nsetsize-1;
+   for(char ch1='A'; ch1 <maxletter; ++ch1) {
+      for (char ch2=ch1+1; ch2 <=maxletter; ++ch2) {
+         std::string s;
+         s+=ch1;
+         s+=ch2;
+         pairsets.insert(s);
+      }
+   }
+   /* for any pair AB, two bits are set corresponding to bits for A and B */
+   std::map<std::string, unsigned> elembmap;
+
+   /* for any pair AB, a bit is set to distinguish it from all other pairs */
+   std::map<std::string, unsigned> pairbmap;
+
+   BOOST_FOREACH(const std::string &s, pairsets) {
+      unsigned bmap = (1<<(s[0]-'A')) | (1<<(s[1]-'A'));
+      elembmap[s] = bmap;
+      pairbmap[s] = (1 << pairbmap.size());
+   }
+   BOOST_FOREACH(const std::string &s1, pairsets) {
+      BOOST_FOREACH(const std::string &s2, pairsets) {
+         bool bdisjoint = ((elembmap[s1] & elembmap[s2]) == 0);
+         if (bcomplementary) { /* if we're solving the complementary problem, we want pairs that are NOT disjoint */
+            bdisjoint = !bdisjoint;
+         }
+         if (bdisjoint) {
+            disjointmap[s1].push_back(pairbmap[s2]);
+         }
+      }
+   }
+   if (bverbose) {
+      std::cout << "image pairsets (" << pairsets.size() << "): ";
+      for (std::set<std::string>::const_iterator i=pairsets.begin(); i!=pairsets.end(); ++i) {
+         std::cout << *i << " ";
+      }
+      std::cout << std::endl;
+   }
+}
+
 /* orbits of image sets of subsets under permutation. First vector is for number of non-unique elements
   in image, can be 1 through n/2. Second vector is for strings, which are representatives of the orbits
   of image sets of specified size, and then a string representing the number of elements in the orbit. */
@@ -138,6 +179,50 @@ std::set<std::set<std::string> > prevorbits;
 std::map<std::set<std::string>, unsigned> orbit_sizes;
 
 unsigned imagesize = 0; /* to be incremented as we increase the size of image */
+
+void validate_orbits(void) {
+   if (bverbose) std::cout << "orbit validation data: " << std::endl;
+   unsigned num = nsetsize * (nsetsize-1) / 2, denom=1, binom = 1;
+   for (unsigned i=1; i<=nsetsize * (nsetsize-1) / 2 / 2; ++i) {
+      unsigned sum = 0;
+      if (bverbose) std::cout << orbits[i].size() / (i+1) << " ";
+      for (unsigned j=i; j<orbits[i].size(); j+=(i+1)) {
+         sum += boost::lexical_cast<unsigned>(orbits[i][j]);
+      }
+      binom *= num--; binom /= denom++;
+      if (bverbose) std::cout << sum << " " << binom << std::endl;
+      if (sum != binom) throw std::runtime_error("invalid orbits");
+   }
+}
+
+bool read_orbits_from_file(void) {
+   std::string fname = boost::lexical_cast<std::string>(nsetsize) + "orbit.txt";
+   std::ifstream ifs(fname.c_str());
+   if (!ifs.good()) return false;
+   for (;;) {
+      char line[256];
+      ifs.getline(line, sizeof(line)-1);
+      if (ifs.eof()) {
+         return true;
+      }
+      if (!ifs) throw std::runtime_error("bad " + fname);
+      if (std::string(line).substr(0,6) == "Level ") {
+         orbits.push_back(std::vector<std::string>());
+         continue;
+      }
+      if (std::string(line).substr(0,4) == " AB ") {
+         const char *p1 = line;
+         while(*p1) {
+            ++p1;
+            const char *p2 = p1;
+            while (*p2 != ' ' && *p2) ++p2;
+            orbits.back().push_back(std::string(p1,p2));
+            p1 = p2;
+         }
+      }
+   }
+   return true;
+}
 
 /* basically what we're going to do here is to take the previous level of orbits, add in one of
    the subsets AB, AC, etc. one by one, and permute it each time through all permutations to generate all
@@ -179,47 +264,12 @@ void next_image_orbit_level(void) {
 }
 
 void find_image_orbits(void) {
-   char maxletter='A'+nsetsize-1;
-   for(char ch1='A'; ch1 <maxletter; ++ch1) {
-      for (char ch2=ch1+1; ch2 <=maxletter; ++ch2) {
-         std::string s;
-         s+=ch1;
-         s+=ch2;
-         pairsets.insert(s);
-      }
-   }
-   /* for any pair AB, two bits are set corresponding to bits for A and B */
-   std::map<std::string, unsigned> elembmap;
-
-   /* for any pair AB, a bit is set to distinguish it from all other pairs */
-   std::map<std::string, unsigned> pairbmap;
-
-   BOOST_FOREACH(const std::string &s, pairsets) {
-//      std::cout << s << std::endl;
-      unsigned bmap = (1<<(s[0]-'A')) | (1<<(s[1]-'A'));
-      elembmap[s] = bmap;
-      pairbmap[s] = (1 << pairbmap.size());
-   }
-   BOOST_FOREACH(const std::string &s1, pairsets) {
-      BOOST_FOREACH(const std::string &s2, pairsets) {
-         bool bdisjoint = ((elembmap[s1] & elembmap[s2]) == 0);
-         if (bcomplementary) { /* if we're solving the complementary problem, we want pairs that are NOT disjoint */
-            bdisjoint = !bdisjoint;
-         }
-         if (bdisjoint) {
-            disjointmap[s1].push_back(pairbmap[s2]);
-         }
-      }
-   }
-   if (bverbose) {
-      std::cout << "image pairsets (" << pairsets.size() << "): ";
-      for (std::set<std::string>::const_iterator i=pairsets.begin(); i!=pairsets.end(); ++i) {
-         std::cout << *i << " ";
-      }
-      std::cout << std::endl;
-   }
    /* put an empty placeholder for index zero which is unused in this scheme */
    orbits.resize(1);
+
+   if (read_orbits_from_file()) {
+      return;
+   }
 
    /* prime the previous orbits with a null set to build upon */
    prevorbits.insert(std::set<std::string>());
@@ -699,11 +749,13 @@ int main(int argc, char *argv[]) {
       }
 
       std::cout << "finding orbits for image multiplicity sets" << std::endl;
+      make_pairsets();
       {
          time_t elapsed = time(NULL);
          find_image_orbits();
          elapsed = time(NULL) - elapsed;
          std::cout << elapsed << " seconds" << std::endl;
+         validate_orbits();
       }
       if (bverbose) {
          for (unsigned i=0; i<orbits.size(); ++i) {
