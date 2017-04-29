@@ -35,6 +35,7 @@
 #include <boost/multiprecision/cpp_int.hpp>
 typedef boost::multiprecision::int256_t multiprecision;
 
+#include "btree_map.h"
 bool bverbose = false; /* flag to print out extra information */
 bool bcomplementary = false; /* flag to solve the complementary problem */
 
@@ -351,13 +352,16 @@ stages that correspond to the same bitmap and drastically reduce the number of c
 
 */
 
-void add_next_vector(std::map<unsigned, boost::uint64_t> &mx, 
-                     const std::map<unsigned, boost::uint64_t> &m1,
+/* this is using the google btree map for better performance and memory utilization */
+typedef btree::btree_map<unsigned, boost::uint64_t> bm_map_t;
+
+void add_next_vector(bm_map_t &mx, 
+                     const bm_map_t &m1,
                      const std::vector<unsigned> &v1)
 {
    mx.clear();
    /* go through the existing level of bitmaps */
-   for(std::map<unsigned, boost::uint64_t>::const_iterator i = m1.begin(); i != m1.end(); ++i) {
+   for(bm_map_t::const_iterator i = m1.begin(); i != m1.end(); ++i) {
       /* add the new bitmaps from the vector */
       for(unsigned j = 0; j< v1.size(); ++j) {
          if ((i->first & v1[j]) == 0) /* if the bitmaps have no bits in common... */
@@ -376,7 +380,7 @@ void add_next_vector(std::map<unsigned, boost::uint64_t> &mx,
    common results from one image_configuration to the next */
 class seqstack_t {
 public:
-   std::map<unsigned, boost::uint64_t> m1;
+   bm_map_t m1;
    std::string name;
 };
 
@@ -445,7 +449,7 @@ void solve_image_configurations(void) {
          at the end of the stack to get how many mappings satisfied all of the problem
          constraints */
       boost::uint64_t res = 0;
-      for(std::map<unsigned, boost::uint64_t>::const_iterator i = vs.back().m1.begin(); i != vs.back().m1.end(); ++i) {
+      for(bm_map_t::const_iterator i = vs.back().m1.begin(); i != vs.back().m1.end(); ++i) {
          res += i->second;
       }
       /* save the result of this image_configuration */
