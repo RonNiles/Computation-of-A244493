@@ -740,7 +740,7 @@ void solve_image_configurations(void) {
    }
    /* solve each image_configuration in order */
    for(;;) {
-      std::string image_configuration;
+      std::string image_configuration = "A";
       if (bread_problems) {
          /* get the next image configuration as a line from the file */
          std::string line;
@@ -748,12 +748,11 @@ void solve_image_configurations(void) {
             if (ifs.bad()) throw std::runtime_error("error reading input file " + unsolved_fname());
             break;
          }
-         image_configuration = "A" + line;
+         image_configuration += line;
          if (ifs.eof() || image_configuration.size() < 2) break;
       } else {
          /* copy the first remaining image_configuration and then erase it from the set */
          if (image_configurations.empty()) break;
-         image_configuration = "A";
          image_configuration.append(image_configurations.begin()->c_str());
          image_configurations.erase(image_configurations.begin());
       }
