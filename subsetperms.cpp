@@ -36,15 +36,35 @@
 typedef boost::multiprecision::int256_t multiprecision;
 
 #include "btree_map.h"
+#include "btree_set.h"
 bool bverbose = false; /* flag to print out extra information */
 bool bcomplementary = false; /* flag to solve the complementary problem */
+bool bwrite_problems = false; /* flag to write the image configurations to a file and then stop */
+bool bread_problems = false; /* flag to read the image configurations from a file instead of calculating them */
 
 /* the initial set 1...n, specify n as "nsetsize" */
 unsigned nsetsize;
 
 /* image_configurations - each string describes a state of map images for which we have to compute
    how many times they can occur*/
-std::set<std::string> image_configurations;
+
+struct btstring {
+   btstring() {s[0] = '\0'; }
+   btstring(std::string s_) {
+      strcpy(s, &s_[1]);
+   }
+   const char * c_str(void) const {
+      return s;
+   }
+   char s[2*14];
+};
+bool operator<(const btstring &lhs, const btstring & rhs) {
+   return strcmp(lhs.s, rhs.s) < 0;
+}
+
+typedef btree::btree_set<btstring> imgconf_t;
+
+imgconf_t image_configurations;
 std::map<std::string, boost::uint64_t> solved_image_configurations;
 
 /*
@@ -288,6 +308,19 @@ public:
    unsigned mainorbit_size;
 };
 
+char pairset_encode[256];
+char pairset_decode[512];
+
+struct imgcfg_encoder {
+   void add(const char *ie, unsigned mp) {
+      unsigned char offset = ie[0] - 'A';
+      offset *= nsetsize;
+      offset += ie[1] - 'A';
+      s += pairset_encode[offset];
+      s += 'a' + mp;
+   }
+   std::string s;
+};
 
 /* templated functor icf_walker which will be called with a mainorbit string and go through all
    of the map_patterns in the image_by_orbit and call back the function "w" with a representative
@@ -304,14 +337,11 @@ struct icf_walker {
          for (unsigned k=0; k<of.orbits.size(); ++k) {
             for (image_grouped_t::const_iterator ig = j->second.begin(); ig != j->second.end(); ++ig) {
                std::vector<unsigned> dp = decode_pattern(*ig);
-               std::string subproblem;
+               imgcfg_encoder icfg;
                for (unsigned seg = 0; seg < sitem.size(); seg += 2) {
-                  subproblem += sitem.substr(seg, 2);
-                  std::string snumber = boost::lexical_cast<std::string>(dp[of.orbits[k].begin()->at(seg/2)-'a']);
-                  while (snumber.size() < 2) snumber.insert(snumber.begin(), '0');
-                  subproblem.append(snumber);
+                  icfg.add(&sitem[seg], dp[of.orbits[k].begin()->at(seg/2)-'a']);
                }
-               w(subproblem, of.mainorbit_size * of.orbits[k].size(), *ig);
+               w(icfg.s, of.mainorbit_size * of.orbits[k].size(), *ig);
             }
          }
       }
@@ -331,7 +361,6 @@ void walk_image_configurations(walker w) {
       image_by_orbit.erase(image_by_orbit.begin());
    }
 }
-
 
 /* all possible subsets of 1..n of order two, using letters so A=1, B=2, etc. */
 std::set<std::string> pairsets;
@@ -356,10 +385,15 @@ void make_pairsets(void) {
    /* for any pair AB, a bit is set to distinguish it from all other pairs */
    std::map<std::string, unsigned> pairbmap;
 
+   char chnext = 'A';
    BOOST_FOREACH(const std::string &s, pairsets) {
       unsigned bmap = (1<<(s[0]-'A')) | (1<<(s[1]-'A'));
       elembmap[s] = bmap;
       pairbmap[s] = (1 << pairbmap.size());
+
+      pairset_decode[2*(chnext-'A')] = s[0];
+      pairset_decode[2*(chnext-'A')+1] = s[1];
+      pairset_encode[ (s[0] - 'A') * nsetsize + (s[1] - 'A') ] = chnext++;
    }
    BOOST_FOREACH(const std::string &s1, pairsets) {
       BOOST_FOREACH(const std::string &s2, pairsets) {
@@ -513,6 +547,7 @@ void walk_main_orbits(walker w, unsigned nitems) {
    const std::string *snext = &orbits[nitems].front();
    unsigned norbits = orbits[nitems].size() / (nitems + 1); /* the extra 1 is for the size */
    for (unsigned n=0; n<norbits; ++n) {
+      std::cout << n << " / " << norbits << " " << image_configurations.size() << "\r" << std::flush;
       std::string sitem;
       for (unsigned k=0; k<nitems; ++k) {
          sitem += *(snext++);
@@ -524,8 +559,7 @@ void walk_main_orbits(walker w, unsigned nitems) {
 
 /* precomputed bitmaps. For every pair AB, and every number of column partners, 
    compute a vector of bitmaps corresponding to all possible combinations */
-std::map<std::string, std::map<unsigned, std::vector<unsigned> > > precomputed;
-
+std::vector<std::vector<std::vector<unsigned> > > precomputed;
 
 /* compute bitmaps for all combinations of n elements in bits vector */
 /* so for example, AB can be mapped to by any other disjoint two element subset, i.e. BC, BD, CD, ...
@@ -563,8 +597,10 @@ void precompute_domain_bitmaps(std::vector<unsigned> &res, const std::vector<uns
 
 void make_domain_table(void) {
    for (std::map<std::string, std::vector<unsigned> >::const_iterator i = disjointmap.begin(); i!= disjointmap.end(); ++i) {
+      precomputed.push_back(std::vector<std::vector<unsigned> >());
+      precomputed.back().resize(i->second.size()+1);
       for (unsigned j=2; j<=i->second.size(); ++j) {
-         precompute_domain_bitmaps(precomputed[i->first][j], i->second, j);
+         precompute_domain_bitmaps(precomputed.back()[j], i->second, j);
       }
    }
 }
@@ -573,25 +609,54 @@ void make_domain_table(void) {
    which gets walked by the "walk_image_configurations" templated function */
 struct insert_image_config {
    void operator() (const std::string &imgcfg, unsigned orbitsize, const std::vector<unsigned> &multiplicities) {
-      /* The orbits and permuted maptypes have been combined by interlacing two letters (for the image element) 
-         with two digits (for the multiplicity) for a string e.g. "AB02AC04AD03" */
+      /* The orbits and permuted maptypes have been combined by interlacing capital letters (for the image element) 
+         with small letters (for the multiplicity) for a string e.g. "AcBcCcDcEcFdGcHd" */
       image_configurations.insert(imgcfg);
    }
 };
+
 void enumerate_image_configurations(void) {
    walk_image_configurations(insert_image_config());
+}
+
+std::string unsolved_fname(void) {
+   std::string fname = boost::lexical_cast<std::string>(nsetsize);
+   if (bcomplementary) fname += 'c';
+   fname += "_unsolved.txt";
+   return fname;
+}
+
+void write_image_configurations_to_file(void) {
+   /* write the results of the image_configuration evaluations to a file for later reference */
+   std::ofstream ofs(unsolved_fname().c_str());
+   unsigned nwritten = 0;
+   unsigned ntotal = image_configurations.size();
+   time_t tx = 0;
+   for (imgconf_t::const_iterator i = image_configurations.begin(); i != image_configurations.end(); ++i) {
+      if (!(ofs << i->c_str() << std::endl)) throw std::runtime_error("writing image configuration");
+      ++nwritten;
+      time_t now = time(NULL);
+      if (tx != now) {
+         tx = now;
+         std::cout << "wrote " << nwritten << " / " << ntotal << "\r" << std::flush;
+      }
+   }
+   ofs.close();
+   if (!ofs) throw std::runtime_error("closing unsloved image configuration output file");
 }
 
 boost::uint64_t max_image_configuration_val = 0;
 
 /* solving the image_configurations. A image_configuration is represented as a string for instance:
-   AB03AC02BD05EF03
+   AcBeGfKd
    This string means, 
       "how many one-to-many mappings "f(x)" of {AB, AC, BC, AD, BD, CD, AE, BE, CE, DE...} to itself
           (use whatever set of two-element subsets is appropriate for your given "n")
       are possible where f(x) is disjoint from (x), and
-        3 elements map to AB, 2 elements map to AC, 5 elements map to BD, and 3 elements map to EF" 
-        ( and no other elements are mapped to)
+        2 (c=2nd letter) elements map to the pairset encoded as A,
+        5 (e=5th letter) elements map to the pairset encoded as B,
+        6 (f=6th letter) elements map to the pairset encoded as G,
+        4 (d=4th letter) elements map to the pairset encoded as K,
 
    Since these are fully-multiple mappings, each element will be mapped to at least twice.
 
@@ -600,9 +665,9 @@ once an item is used in the domain, it can't be used again and a bitmap is used 
 items in the domain have been used. 
 
 In order to piggyback the solutions, we solve them in sorted order. For example, since 
-   AB03AC02BD06EF03
-   AB03AC02BD06EF04
-will be solved sequentially, the state information for AB03AC02BD06 is popped from the stack between these
+   AcBcCcDcEcFdGcHdSc
+   AcBcCcDcEcFdGcHdSd
+will be solved sequentially, the state information for AcBcCcDcEcFdGcHd is popped from the stack between these
 two operations so that we only have to solve the last stage of the problem again.
 
 Also, the solutions are pigeonholed via the std::map<unsigned, boost::uint64_t> . There are in many cases
@@ -648,6 +713,7 @@ public:
 void solve_image_configurations(void) {
    /* keep track of time spent solving the image_configurations. */
    time_t start = time(NULL);
+   time_t last = 0;
    std::vector<seqstack_t> vs;
    {
       /* initialize stack with special backstop item designed to work when the first vector is added */
@@ -663,16 +729,34 @@ void solve_image_configurations(void) {
    unsigned neval = 0;
 
    /* write the results of the image_configuration evaluations to a file for later reference */
-   std::string fname = "subproblems";
-   fname += boost::lexical_cast<std::string>(nsetsize);
-   fname += ".txt";
+   std::string fname = boost::lexical_cast<std::string>(nsetsize);
+   if (bcomplementary) fname += 'c'; 
+   fname += "_solved.txt";
    std::ofstream ofs(fname.c_str());
 
+   std::ifstream ifs;
+   if (bread_problems) {
+      ifs.open(unsolved_fname().c_str());
+   }
    /* solve each image_configuration in order */
-   while (!image_configurations.empty()) {
-      /* copy the first remaining image_configuration and then erase it from the set */
-      std::string image_configuration = *image_configurations.begin();
-      image_configurations.erase(image_configurations.begin());
+   for(;;) {
+      std::string image_configuration;
+      if (bread_problems) {
+         /* get the next image configuration as a line from the file */
+         std::string line;
+         if (!std::getline(ifs, line)) {
+            if (ifs.bad()) throw std::runtime_error("error reading input file " + unsolved_fname());
+            break;
+         }
+         image_configuration = "A" + line;
+         if (ifs.eof() || image_configuration.size() < 2) break;
+      } else {
+         /* copy the first remaining image_configuration and then erase it from the set */
+         if (image_configurations.empty()) break;
+         image_configuration = "A";
+         image_configuration.append(image_configurations.begin()->c_str());
+         image_configurations.erase(image_configurations.begin());
+      }
 
       /* piggyback on results of previous problem if possible: 
          pop the stack back to the point where the partial previous problem is 
@@ -684,16 +768,16 @@ void solve_image_configurations(void) {
       /* for the remaining stages, do them step by step. */
       while(vs.back().name != image_configuration) {
 
-         /* four characters at a time, specifying the image element and the number
+         /* two characters at a time, specifying the image element and the number
             of domain elements that map to it */
-         std::string s = image_configuration.substr(vs.back().name.size(), 4);
-         if (s.size() != 4) throw std::runtime_error("image_configurations string error");
-         unsigned nelements = boost::lexical_cast<unsigned>(s.substr(2, 2));
+         std::string s = image_configuration.substr(vs.back().name.size(), 2);
+         if (s.size() != 2) throw std::runtime_error("image_configurations string error");
+         unsigned nelements = (s[1] - 'a');
 
          /* get the precomputed vector containing all bitmaps corresponding to all 
           "nelements choose 2" combinations of domain elements which are disjoint from 
           the specified image element */
-         std::vector<unsigned> &vcol = precomputed[s.substr(0,2)][nelements];
+         std::vector<unsigned> &vcol = precomputed[s[0]-'A'][nelements];
          if (vcol.empty()) throw std::runtime_error("precomputed bitmap vector not found");
 
          /* send the vector and the previous level map to the routine that will check and add
@@ -720,10 +804,13 @@ void solve_image_configurations(void) {
       if (res > max_image_configuration_val) max_image_configuration_val = res;
 
       /* also, write each result to the output file for later reference purposes */
-      ofs << vs.back().name << "," << res << std::endl;
+      if (!(ofs << vs.back().name << "," << res << std::endl)) throw std::runtime_error("writing results file");
 
-      /* every 100 entries, print out time and progress statistics */
-      if ((++neval % 100) == 0) {
+      /* every second print out time and progress statistics */
+      ++neval;
+      time_t now = time(NULL);
+      if (now != last) {
+         last = now;
          unsigned nbits = 0;
          boost::uint64_t tmp = max_image_configuration_val;
          while(tmp) {
@@ -743,6 +830,8 @@ void solve_image_configurations(void) {
       }
       std::cout << std::endl << " largest value encountered: " << max_image_configuration_val << " (" << nbits << " bits)" << std::endl;
    }
+   ofs.close();
+   if (!ofs) throw std::runtime_error("closing solved image configuration output file");
 }
 
 /* now all the image_configurations have been solved, tally them by size since we need them in order 
@@ -897,10 +986,13 @@ int main(int argc, char *argv[]) {
       for (int i=1; i<argc; ++i) {
          if (argv[i][0] == 'v') bverbose = true;
          else if (argv[i][0] == 'c') bcomplementary = true;
+         else if (argv[i][0] == 'r') bread_problems = true;
+         else if (argv[i][0] == 'w') bwrite_problems = true;
          else {
             nsetsize = boost::lexical_cast<unsigned>(argv[i]);
          }
       }
+      make_pairsets();
 
       std::cout << "enumerating fully-multiple map types" << std::endl;
       enumerate_fully_multiple_map_types();
@@ -916,7 +1008,6 @@ int main(int argc, char *argv[]) {
          }
       }
       std::cout << "finding orbits for image multiplicity sets" << std::endl;
-      make_pairsets();
       {
          time_t elapsed = time(NULL);
          find_image_orbits();
@@ -939,25 +1030,26 @@ int main(int argc, char *argv[]) {
          std::vector<std::vector<std::string> > orbits;
       }
 
-      std::cout << "enumerating sequences of sub-problems to solve" << std::endl;
-      enumerate_image_configurations();
-      std::cout << "found " << image_configurations.size() << " image_configurations" << std::endl;
-      if (bverbose) {
-         for (std::set<std::string>::const_iterator i = image_configurations.begin(); i != image_configurations.end(); ++i) {
-            std::cout << "  " << *i << std::endl;
-         }
+      if (!bread_problems) {
+         std::cout << "enumerating sequences of image configurations to solve" << std::endl;
+         enumerate_image_configurations();
+         std::cout << "found " << image_configurations.size() << " image_configurations" << std::endl;
+      }
+      if (bwrite_problems) {
+         write_image_configurations_to_file();
+         return 0;
       }
 
       std::cout << "precomputing domain bitmaps for image elements" << std::endl;
       make_domain_table();
       if (bverbose) {
-         for (std::map<std::string, std::map<unsigned, std::vector<unsigned> > >::const_iterator i = precomputed.begin();
-               i != precomputed.end(); ++i) {
-            std::cout << i->first << std::endl;
-            for (std::map<unsigned, std::vector<unsigned> >::const_iterator j = i->second.begin(); j != i->second.end(); ++j) {
-               std::cout << "   " << j->first << ": ";
-               for (unsigned k=0; k<j->second.size(); ++k) {
-                  std::string s = std::bitset<32>(j->second[k]).to_string();
+         for (unsigned i = 0; i < precomputed.size(); ++i) {
+            std::cout << std::string(pairset_decode + 2 * i, 2) << std::endl;
+            for (unsigned j = 0; j != precomputed[i].size(); ++j) {
+               if (precomputed[i][j].empty()) continue;
+               std::cout << "   " << j << ": ";
+               for (unsigned k=0; k<precomputed[i][j].size(); ++k) {
+                  std::string s = std::bitset<32>(precomputed[i][j][k]).to_string();
                   while(s.size() > nsetsize * (nsetsize-1) /2) s.erase(s.begin());
                   std::cout << s << " ";
                }
