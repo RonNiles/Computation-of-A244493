@@ -41,6 +41,7 @@ bool bverbose = false; /* flag to print out extra information */
 bool bcomplementary = false; /* flag to solve the complementary problem */
 bool bwrite_problems = false; /* flag to write the image configurations to a file and then stop */
 bool bread_problems = false; /* flag to read the image configurations from a file instead of calculating them */
+bool bbreakdown_by_size = false; /* flag to compute contributions to the result broken down by sizes of the fully multiple mappings */
 
 /* the initial set 1...n, specify n as "nsetsize" */
 unsigned nsetsize;
@@ -979,19 +980,88 @@ void compute_final_result(void) {
    std::cout << problem_solution << std::endl;
 }
 
+/* tally results separately by size of the fully-multiple mapping that contributed. Basically researching
+   to see if there is any way to approximate the result with fewer mappings. (Results were not promising.) */
+void breakdown_by_size(void) {
+   unsigned nelements = nsetsize * (nsetsize-1) /2; /* number of two-element subsets, n choose 2 */
+   unsigned ndisjoint = (nsetsize -2) * (nsetsize-3) /2; /* number of elements disjoint from any given, n-2 choose 2 */
+   if (bcomplementary) {
+      ndisjoint = nelements - ndisjoint; /* we want the non-disjoint elements for the complementary problem */
+   }
+   /* calculate a vector of factorials from zero factorial to nelements factorial */
+   std::vector<multiprecision> factorial;
+   factorial.push_back(1);
+   for (unsigned i=1; i<=nelements; ++i) {
+      factorial.push_back(factorial.back());
+      factorial.back() *= i;
+   }
+
+   multiprecision coeff = 1; /* the current coefficient for the current factorial */
+   multiprecision total = factorial[nelements];
+   unsigned num = nelements, denom = 1; /* numerator and denominator for calculating sequential combinations */
+   for (unsigned i=1; i<=nelements; ++i) {
+      /* The main coeffient increases this way for each inclusion exclusion step. It's basically the 
+      next highest power of ndisjoint followed by the next combination described by num and denom */
+      coeff *= num--;
+      coeff /= denom++;
+      coeff *= ndisjoint;
+      if (i&1) total -= coeff * factorial[nelements-i];
+      else total += coeff * factorial[nelements-i];
+   }
+   std::cout << "Contribution from M: " << total << std::endl;
+   for (unsigned i=2; i<=nelements; ++i) {
+      multiprecision newvalues = 0;
+      std::map<unsigned, std::map<std::vector<unsigned>, multiprecision> >::const_iterator im = results_by_size.find(i);
+      if (im != results_by_size.end()) {
+         for(std::map<std::vector<unsigned>, multiprecision>::const_iterator j = im->second.begin(); j != im->second.end(); ++j) {
+            multiprecision mpnet = j->second;
+            mpnet *= value_function(j->first);
+            newvalues += mpnet;
+         }
+      }
+      std::cout << "newvalues from maps of of size " << i << ": " << newvalues << std::endl;
+      unsigned num = nelements-i, denom = 1; /* numerator and denominator for calculating sequential combinations */
+      multiprecision coeff = newvalues; /* the current coefficient for the current factorial */
+      multiprecision subtotal = 0;
+      for (unsigned j=i; j<=nelements; ++j) {
+         if (j&1) subtotal -= coeff * factorial[nelements-j];
+         else subtotal += coeff * factorial[nelements-j];
+         coeff *= num--;
+         coeff /= denom++;
+         coeff *= ndisjoint;
+      }
+      total += subtotal;
+      std::cout << "Subtotal and total for maps of size " << i << ": " << subtotal << ", " << total << std::endl;
+   }
+   std::cout << total << std::endl;
+}
+
+void usage(void) {
+   throw std::runtime_error("usage: subsetperms nsetsize [v] [c] [r] [w] [bysize]\n"\
+   "   where nsetsize is from 5 through 7\n" \
+   "   c solves the complementary problem\n" \
+   "   r reads image configurations to solve from a file\n" \
+   "   w writes image configurations to a file without solving them\n" \
+   "   bysize calculates and prints out contributions to the result by size\n");
+}
+
 int main(int argc, char *argv[]) {
    try {
-      if (argc <2) throw std::runtime_error("usage: subsetperms nsetsize [v]erbose\n  where nsetsize is from 5 through 7");
+      if (argc <2) usage();
       for (int i=1; i<argc; ++i) {
          if (argv[i][0] == 'v') bverbose = true;
          else if (argv[i][0] == 'c') bcomplementary = true;
          else if (argv[i][0] == 'r') bread_problems = true;
          else if (argv[i][0] == 'w') bwrite_problems = true;
-         else {
+         else if (std::string("bysize") == argv[i]) bbreakdown_by_size = true;
+         else try {
             nsetsize = boost::lexical_cast<unsigned>(argv[i]);
+         } catch(...) {
+            usage();
          }
       }
       make_pairsets();
+      std::cout << std::endl;
 
       std::cout << "enumerating fully-multiple map types" << std::endl;
       enumerate_fully_multiple_map_types();
@@ -1067,6 +1137,9 @@ int main(int argc, char *argv[]) {
 
       std::cout << "computing final result" << std::endl;
       compute_final_result();
+
+      if (bbreakdown_by_size)
+         breakdown_by_size();
 
    } catch (std::exception &x) {
       std::cout << x.what() << std::endl;
