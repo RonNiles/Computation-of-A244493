@@ -624,9 +624,10 @@ unsigned imagesize = 0; /* to be incremented as we increase the size of image */
 /* this is a consistency check on the orbits. The sum of all the orbit sizes of a specific size 
    must sum to a specific binomial and this procedure checks that */
 void validate_orbits(void) {
-   unsigned num = nsetsize * (nsetsize-1) / 2, denom=1, binom = 1;
+   unsigned num = nsetsize * (nsetsize-1) / 2, denom=1;
+   boost::uint64_t binom = 1;
    for (unsigned i=1; i<=nsetsize * (nsetsize-1) / 2 / 2; ++i) {
-      unsigned sum = 0;
+      boost::uint64_t sum = 0;
       for (unsigned j=i; j<orbits[i].size(); j+=(i+1)) {
          sum += boost::lexical_cast<unsigned>(orbits[i][j]);
       }
